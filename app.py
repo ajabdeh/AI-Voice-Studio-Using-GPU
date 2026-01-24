@@ -116,20 +116,45 @@ def strict_normalize_text(text, readable_list, custom_dict):
     text = re.sub(r'([.!?,;])(?=[^\s])', r'\1 ', text)
     return text.strip()
 
+# --- THE RECURSIVE CHUNKING LOGIC ---
 def split_text_for_engine(text, max_chars=160):
-    """Semantic chunking to prevent processing timeouts during narration."""
+    """
+    Enforces a strict character limit. If a sentence exceeds 160 chars, 
+    it recursively sub-splits at commas or spaces to prevent AI truncation.
+    """
     if not text: return []
+    # Split primary text by sentence-ending punctuation
     sentences = re.split(r'(?<=[.!?])\s+', text)
     chunks, current_chunk = [], ""
+    
     for s in sentences:
         s = s.strip()
         if not s: continue
+        
+        # Check if adding the next sentence exceeds the max chunk size
         if len(current_chunk) + len(s) + 1 <= max_chars:
             current_chunk = (current_chunk + " " + s).strip()
         else:
-            if current_chunk: chunks.append(current_chunk)
-            current_chunk = s
-    if current_chunk: chunks.append(current_chunk)
+            if current_chunk: 
+                chunks.append(current_chunk)
+            
+            # RECURSIVE SUB-SPLIT: Handle single sentences that are already too long
+            if len(s) > max_chars:
+                # Force split at commas, semicolons, or spaces
+                parts = re.split(r'(?<=[,;])\s+', s)
+                temp = ""
+                for p in parts:
+                    if len(temp) + len(p) + 1 <= max_chars:
+                        temp = (temp + " " + p).strip()
+                    else:
+                        if temp: chunks.append(temp)
+                        temp = p.strip()
+                current_chunk = temp
+            else:
+                current_chunk = s
+                
+    if current_chunk: 
+        chunks.append(current_chunk)
     return chunks
 
 # --- USER INTERFACE SETUP ---
@@ -189,7 +214,7 @@ with tab1:
 
     # Display script stats
     char_cnt, word_cnt, chunk_cnt = len(clean_text), len(clean_text.split()), len(final_chunks)
-    st.markdown(f"📊 **Stats:** {char_cnt} Chars | {word_cnt} Words | **{chunk_cnt} Chunks**")
+    st.markdown(f"📊 **Stats:** {char_cnt} Chars | {word_cnt} Words | **{chunk_cnt} Chunks (Locked)**")
     
     # Creativity slider
     temp_val = st.select_slider("🌡️ Voice Temperature", options=[0.5, 0.6, 0.7, 0.75, 0.8, 0.85], value=0.75)
@@ -218,6 +243,7 @@ with tab1:
             # Benchmark timer for telemetry
             start_time = time.time()
             with st.status("🚀 Producing Studio Master...", expanded=True) as status:
+                # Load the pre-cached XTTS model
                 tts = load_model()
                 
                 # Move voice latents to GPU memory for high-speed inference
@@ -251,7 +277,7 @@ with tab1:
                     audio_pieces.append(wav_t)
                     progress_bar.progress((i + 1) / chunk_cnt)
 
-                # Concatenate fragments and resample to 48kHz
+                # Concatenate fragments and resample to Studio Grade 48kHz
                 combined = torch.cat(audio_pieces, dim=1)
                 resampler = torchaudio.transforms.Resample(orig_freq=24000, new_freq=48000)
                 mastered = resampler(combined)
@@ -267,9 +293,11 @@ with tab1:
                 # Clear GPU memory
                 gc.collect()
                 
+                # Calculate total processing time
                 total_time = time.time() - start_time
                 status.update(label=f"✅ Master Ready in {total_time:.2f}s!", state="complete")
             
+            # Show built-in audio player and download button
             st.audio(out_path)
             st.download_button("📥 Download 48k WAV", open(out_path, "rb"), file_name=out_name, use_container_width=True)
 
@@ -285,21 +313,23 @@ with tab2:
     if st.button("🧬 Extract Vocal DNA", use_container_width=True):
         if v_wav:
             with st.status("Analyzing Voice Characteristics...") as s:
+                # Store original upload temporarily
                 with open("temp.wav", "wb") as f: 
                     f.write(v_wav.getbuffer())
                 
                 tts = load_model()
                 sr = sf.info("temp.wav").samplerate
                 
-                # Load selected segment for cloning
+                # Load specified segment for cloning
                 wav, _ = torchaudio.load("temp.wav", frame_offset=int(s_start*sr), num_frames=int(s_dur*sr))
                 v_name = v_wav.name.split('.')[0]
                 
-                # Extract latents and save to fingerprint file
+                # Extract latents and save to PTH fingerprint file
                 torchaudio.save("temp_s.wav", wav, sr)
                 lats = tts.synthesizer.tts_model.get_conditioning_latents(audio_path=["temp_s.wav"])
                 torch.save({"gpt_cond_latent": lats[0], "speaker_embedding": lats[1]}, os.path.join(LIB_DIR, f"{v_name}.pth"))
                 
+                # Cleanup and refresh UI
                 os.remove("temp.wav")
                 os.remove("temp_s.wav")
                 st.rerun()
