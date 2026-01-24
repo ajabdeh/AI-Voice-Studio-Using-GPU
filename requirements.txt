@@ -1,0 +1,8 @@
+--find-links https://download.pytorch.org/whl/torch_stable.html
+torch==2.6.0+cu118
+torchaudio==2.6.0+cu118
+transformers==4.38.0
+streamlit
+coqui-tts
+soundfile
+numpy<2.0.0
